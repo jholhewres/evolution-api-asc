@@ -628,7 +628,7 @@ export class BaileysStartupService extends ChannelStartupService {
       this.logger.info(`Browser: ${browser}`);
     }
 
-    const baileysVersion = await fetchLatestWaWebVersion({});
+    const baileysVersion = await fetchLatestWaWebVersion({}, this.cache);
     const version = baileysVersion.version;
     const log = `Baileys version: ${version.join('.')}`;
 
