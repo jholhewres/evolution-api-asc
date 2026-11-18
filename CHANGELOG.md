@@ -1,9 +1,11 @@
 # 2.3.7-asc.1 (2026-11-18)
 
 Patch release of 2.3.7 (commit `cd800f29`). It fixes WhatsApp Web sessions that stay
-`open` but stop receiving messages, and moves Baileys to 7.0.0-rc14. It needs no database
-migration. Baileys and libsignal fixes ship as `patch-package` patches in `patches/`, which
-the `postinstall` hook applies.
+`open` but stop receiving messages, and moves Baileys to 7.0.0-rc14. Baileys and libsignal fixes
+ship as `patch-package` patches in `patches/`, which the `postinstall` hook applies.
+
+The only schema change is two indexes on `Message`, built `CONCURRENTLY` (`npm run db:deploy`). The
+code does not depend on them, so they can be deployed after the restart and kept on a rollback.
 
 ### Baileys 7.0.0-rc.9 -> 7.0.0-rc14
 
@@ -41,6 +43,23 @@ the `postinstall` hook applies.
   master). rc14 builds download URLs from the host in `url`, and that host does not resolve.
 * **Each socket's AsyncLocalStorage is released when it ends** (patch, Baileys PR #2911). The cost
   no longer grows with every reconnect.
+* **A media download cut mid-body ends with an error** (patch, Baileys #2750/#2716). Before, it
+  threw an uncaught `terminated` and the stream never ended, which held the instance's message
+  pipeline.
+* **A non-101 WebSocket upgrade (503) closes the socket** (patch, Baileys #2913). Before, it stayed
+  in CONNECTING forever.
+* **Device queries no longer force-refresh every LID session** (patch, Baileys #2901/#2902). Forcing
+  replaced the open session with each contact's phone, our own phone included, on every device
+  fetch.
+* **A retry resend is encrypted once** (patch, Baileys PR #2898). It was encrypted twice, so the
+  server rejected it (479) and the session advanced twice.
+* **The domain type is per device** (patch, Baileys #2751). A hosted device moved every later
+  device to the hosted server.
+* **`companion_reg_refresh` rotates the adv secret and re-renders the QR** (patch, Baileys
+  #2737/#2765). Before, QR scans failed with "couldn't link".
+* **The pushName presence is sent only when a name arrives** (patch, Baileys #2789). Before, every
+  key-churn `creds.update` sent a bare `<presence/>`, which marked the account online and stopped
+  the phone's notifications.
 * Evolution typechecks against rc14 without source changes. The libsignal dependency moves to npm
   `libsignal@6.0.0`, and app state sync uses `whatsapp-rust-bridge@0.5.4`. Both load from
   `node dist/main` on Node 22 (require of ESM).
@@ -50,6 +69,10 @@ the `postinstall` hook applies.
 * **Session keys stay out of the log** (patch). libsignal printed the whole `SessionEntry`,
   including the ratchet private and root keys, every time a session was opened or closed. That
   happens on every decrypt retry.
+* **Each session decrypt attempt runs on a copy** (patch). A failed attempt stepped the ratchet and
+  dropped chain keys of the session it ran on, and that damage was stored when a later session
+  succeeded. One late message on an older session then broke the open session ("No matching
+  sessions found for message", "Chain closed").
 
 ### Connection handling
 
@@ -71,11 +94,30 @@ the `postinstall` hook applies.
   `sw.js` every time.
 * **The message subject is recreated after a logout** (upstream PR #2717). Before, every incoming
   message was dropped after a logout and a new connection on the same process.
+* **One stuck event batch no longer holds the instance** (from upstream PR #2787). All batches of an
+  instance run on one chain that outlives reconnects. After 120 s the queue moves on and logs it.
 
 ### Messages and history sync
 
 * **No empty resend for a message that is not stored** (upstream PR #2728). `getMessage` returned
   `{ conversation: '' }`, and Baileys relayed it under the original id as a blank bubble.
+* **An upserted message is never dropped on the media path** (upstream #2720, #2684, #2763, #2552,
+  #2673). Before:
+  * with S3 on, a skipped video upload (`S3_SAVE_VIDEO` unset) or a missing media returned from the
+    whole handler, so `MESSAGES_UPSERT` was not sent for that message or the rest of the batch;
+  * the `'messageContextInfo' in msg` guard matched the protobuf prototype, so captioned documents
+    and media sent from the phone were treated as empty.
+
+  Each message now has its own try. The same early return on send left the request without its
+  `SEND_MESSAGE` event.
+* **App state sync keys are decoded with `fromObject`** (upstream #2685/#2610). `create()` kept
+  `keyData` as base64, which caused an "Invalid patch mac" / resync-from-v0 loop.
+* **Voice notes keep `quoted`** (upstream #2516).
+* **A message deleted for everyone is not resent on a retry receipt**, and `deleteMessage` looks
+  the row up within the instance (from upstream #2751).
+* **Indexes on `Message` by `(instanceId, key->>'id')` and `(instanceId, key->>'remoteJid')`**
+  (from upstream #2771). They cover `getMessage` and `messages.update` on every ack. Built
+  `CONCURRENTLY`, one statement per migration.
 * **History messages from LID chats carry `key.remoteJidAlt`**. It is taken first from the LID-PN
   pairs Baileys passes on `messaging-history.set`, then from the history contacts.
 
@@ -86,6 +128,25 @@ the `postinstall` hook applies.
   `?instanceName=` over it, so one instance's key could act on another. `fetchInstances` has no
   path instance and keeps using `instanceName`/`instanceId` from the query to narrow its result,
   which is already limited to the caller's key.
+* **`ws` pinned to 8.21.3** (overrides). This fixes CVE-2026-48779 (memory exhaustion) and
+  CVE-2026-45736 (memory disclosure) for Baileys and engine.io.
+
+### Upstream sweep
+
+* **Evolution API:** every open PR (99), every PR closed since 2025-12-05 (117), the issues (172 open
+  and 416 closed since 2025-12-05) and the commits on `develop` and the other branches after 2.3.7.
+  Out of these, 65 rows are relevant: 13 were already in this branch, 9 were applied above and 43 were
+  left out.
+* **Baileys:** 955 items (open and recently closed PRs and issues, and master after rc14). Out of
+  these, 91 rows are relevant: 11 are in rc14, 5 were already in our patch, 8 were applied above and
+  67 were left out.
+* Notable items left out:
+  * the 9th-digit rewrite (#2688), because it breaks numbers registered with 12 digits;
+  * the 408 backoff (#2732/#2612), which fixes a develop regression this branch never took;
+  * link previews fetched by the server (SSRF risk);
+  * media re-upload (#2910/#2834), which waits with no timeout;
+  * `Curve.verify` enforcement (#2751), which needs a live handshake test;
+  * the tctoken transaction fix (#2873).
 
 ### Not included
 
