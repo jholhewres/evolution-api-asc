@@ -584,24 +584,32 @@ export class BaileysStartupService extends ChannelStartupService {
       if (full) {
         return webMessageInfo[0];
       }
-      if (webMessageInfo[0].message?.pollCreationMessage) {
-        const messageSecretBase64 = webMessageInfo[0].message?.messageContextInfo?.messageSecret;
+
+      // Baileys resends whatever getMessage returns; an empty object reaches the chat as a blank bubble.
+      const message = webMessageInfo[0]?.message;
+      if (!message) {
+        return undefined;
+      }
+
+      if (message.pollCreationMessage) {
+        const messageSecretBase64 = message.messageContextInfo?.messageSecret;
 
         if (typeof messageSecretBase64 === 'string') {
           const messageSecret = Buffer.from(messageSecretBase64, 'base64');
 
           const msg = {
             messageContextInfo: { messageSecret },
-            pollCreationMessage: webMessageInfo[0].message?.pollCreationMessage,
+            pollCreationMessage: message.pollCreationMessage,
           };
 
           return msg;
         }
       }
 
-      return webMessageInfo[0].message;
-    } catch {
-      return { conversation: '' };
+      return message;
+    } catch (error) {
+      this.logger.verbose(`getMessage: lookup for ${key.id} failed: ${error?.toString()}`);
+      return undefined;
     }
   }
 
