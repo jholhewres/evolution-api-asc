@@ -249,6 +249,7 @@ export class BaileysStartupService extends ChannelStartupService {
   private readonly msgRetryCounterCache: CacheStore = new NodeCache();
   private readonly userDevicesCache: CacheStore = new NodeCache({ stdTTL: 300000, useClones: false });
   private endSession = false;
+  private isDeleting = false; // Flag to prevent reconnection during deletion
   private logBaileys = this.configService.get<Log>('LOG').BAILEYS;
   private eventProcessingQueue: Promise<void> = Promise.resolve();
 
@@ -265,10 +266,27 @@ export class BaileysStartupService extends ChannelStartupService {
   }
 
   public async logoutInstance() {
-    this.messageProcessor.onDestroy();
-    await this.client?.logout('Log out instance: ' + this.instanceName);
+    // Mark instance as deleting to prevent reconnection attempts
+    this.isDeleting = true;
+    this.endSession = true;
 
-    this.client?.ws?.close();
+    this.messageProcessor.onDestroy();
+
+    if (this.client) {
+      try {
+        await this.client.logout('Log out instance: ' + this.instanceName);
+      } catch (error) {
+        this.logger.error({ message: 'Error during logout', error });
+      }
+
+      // Improved socket cleanup
+      try {
+        this.client.ws?.close();
+        this.client.end(new Error('Instance logout'));
+      } catch (error) {
+        this.logger.error({ message: 'Error during socket cleanup', error });
+      }
+    }
 
     const db = this.configService.get<Database>('DATABASE');
     const cache = this.configService.get<CacheConf>('CACHE');
@@ -424,11 +442,30 @@ export class BaileysStartupService extends ChannelStartupService {
     }
 
     if (connection === 'close') {
+      // Check if instance is being deleted or session is ending
+      if (this.isDeleting || this.endSession) {
+        this.logger.info('Instance is being deleted/ended, skipping reconnection attempt');
+        return;
+      }
+
       const statusCode = (lastDisconnect?.error as Boom)?.output?.statusCode;
       const codesToNotReconnect = [DisconnectReason.loggedOut, DisconnectReason.forbidden, 402, 406];
       const shouldReconnect = !codesToNotReconnect.includes(statusCode);
+
+      this.logger.info({
+        message: 'Connection closed, evaluating reconnection',
+        statusCode,
+        shouldReconnect,
+        instanceName: this.instance.name,
+      });
+
       if (shouldReconnect) {
-        await this.connectToWhatsapp(this.phoneNumber);
+        // Add 3 second delay before reconnection to prevent rapid reconnection loops
+        this.logger.info('Reconnecting in 3 seconds...');
+        setTimeout(async () => {
+          if (this.isDeleting || this.endSession) return;
+          await this.connectToWhatsapp(this.phoneNumber);
+        }, 3000);
       } else {
         this.sendDataWebhook(Events.STATUS_INSTANCE, {
           instance: this.instance.name,
@@ -694,6 +731,8 @@ export class BaileysStartupService extends ChannelStartupService {
     };
 
     this.endSession = false;
+    // A logout marks the instance as deleting; a new connection on the same instance must reconnect again.
+    this.isDeleting = false;
 
     this.client = makeWASocket(socketConfig);
 
