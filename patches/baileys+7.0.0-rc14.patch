@@ -1,0 +1,71 @@
+diff --git a/node_modules/baileys/lib/Socket/messages-recv.js b/node_modules/baileys/lib/Socket/messages-recv.js
+index f2003ac..3533caf 100644
+--- a/node_modules/baileys/lib/Socket/messages-recv.js
++++ b/node_modules/baileys/lib/Socket/messages-recv.js
+@@ -554,6 +554,10 @@ export const makeMessagesRecvSocket = (config) => {
+                 return;
+             }
+             const countChild = getBinaryNodeChild(node, 'count');
++            if (!countChild) {
++                logger.debug({ attrs: node.attrs, children: getAllBinaryNodeChildren(node).map(c => c.tag) }, 'encrypt notification without count');
++                return;
++            }
+             const count = +countChild.attrs.value;
+             const shouldUploadMorePreKeys = count < MIN_PREKEY_COUNT;
+             logger.debug({ count, shouldUploadMorePreKeys }, 'recv pre-key count');
+@@ -1576,11 +1580,22 @@ export const makeMessagesRecvSocket = (config) => {
+             return exec(node, false).catch(err => onUnexpectedError(err, identifier));
+         }
+     };
++    // Contacts' statuses can arrive as a top-level <status> stanza. It is not decoded, but it must be
++    // acked: otherwise the server holds back new messages and ends the stream ~50 min later.
++    const handleStatus = async (node) => {
++        try {
++            await sendMessageAck(node);
++        }
++        catch (error) {
++            onUnexpectedError(error, 'acking status stanza');
++        }
++    };
+     const offlineNodeProcessor = makeOfflineNodeProcessor(new Map([
+         ['message', handleMessage],
+         ['call', handleCall],
+         ['receipt', handleReceipt],
+-        ['notification', handleNotification]
++        ['notification', handleNotification],
++        ['status', handleStatus]
+     ]), {
+         isWsOpen: () => ws.isOpen,
+         onUnexpectedError,
+@@ -1621,6 +1636,10 @@ export const makeMessagesRecvSocket = (config) => {
+     ws.on('CB:notification', async (node) => {
+         await processNode('notification', node, 'handling notification', handleNotification);
+     });
++    ws.on('CB:status', async (node) => {
++        // processNode acks ignored JIDs itself, outside handleStatus' try/catch
++        await processNode('status', node, 'acking status stanza', handleStatus).catch(error => onUnexpectedError(error, 'acking status stanza'));
++    });
+     ws.on('CB:ack,class:message', (node) => {
+         handleBadAck(node).catch(error => onUnexpectedError(error, 'handling bad ack'));
+     });
+diff --git a/node_modules/baileys/lib/Utils/messages-media.js b/node_modules/baileys/lib/Utils/messages-media.js
+index a3d2fa6..c4b59e9 100644
+--- a/node_modules/baileys/lib/Utils/messages-media.js
++++ b/node_modules/baileys/lib/Utils/messages-media.js
+@@ -403,11 +403,15 @@ const toSmallestChunkSize = (num) => {
+     return Math.floor(num / AES_CHUNK_SIZE) * AES_CHUNK_SIZE;
+ };
+ export const getUrlFromDirectPath = (directPath, host = DEF_MEDIA_HOST) => `https://${host}${directPath}`;
++// Some media messages (stickers, voice notes, images) carry a `url` on `a.whatsapp.net`,
++// which doesn't resolve. Their `directPath` is valid, so it must go to the default host.
++const PLACEHOLDER_MEDIA_HOST = 'a.whatsapp.net';
+ const extractHost = (url) => {
+     if (!url)
+         return undefined;
+     try {
+-        return new URL(url).host;
++        const host = new URL(url).host;
++        return host === PLACEHOLDER_MEDIA_HOST ? undefined : host;
+     }
+     catch {
+         return undefined;
