@@ -974,6 +974,16 @@ export class BaileysStartupService extends ChannelStartupService {
           }
         }
 
+        // History sync pairs each LID chat with its phone number; keep it so consumers can resolve LID chats.
+        const lidPhones = new Map<string, string>();
+        for (const contact of contacts as any[]) {
+          const lid = contact.lid ?? (contact.id?.endsWith('@lid') ? contact.id : undefined);
+          const pn = contact.phoneNumber ?? (contact.id?.endsWith('@s.whatsapp.net') ? contact.id : undefined);
+          if (lid && pn) {
+            lidPhones.set(lid, pn);
+          }
+        }
+
         const chatsRaw: { remoteJid: string; instanceId: string; name?: string }[] = [];
         const chatsRepository = new Set(
           (await this.prismaRepository.chat.findMany({ where: { instanceId: this.instanceId } })).map(
@@ -1032,6 +1042,11 @@ export class BaileysStartupService extends ChannelStartupService {
 
           if (messagesRepository?.has(m.key.id)) {
             continue;
+          }
+
+          const key = m.key as any;
+          if (key.remoteJid?.endsWith('@lid') && !key.remoteJidAlt && lidPhones.has(key.remoteJid)) {
+            key.remoteJidAlt = lidPhones.get(key.remoteJid);
           }
 
           if (!m.pushName && !m.key.fromMe) {
