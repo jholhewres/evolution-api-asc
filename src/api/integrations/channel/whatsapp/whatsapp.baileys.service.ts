@@ -591,6 +591,14 @@ export class BaileysStartupService extends ChannelStartupService {
         return undefined;
       }
 
+      // A message deleted for everyone keeps its content in the table; answering a later retry receipt
+      // with it would bring the deleted text back on the device that asked.
+      const row = webMessageInfo[0] as any;
+      if (row.status === 'DELETED' || row.key?.deleted === true) {
+        this.logger.verbose(`getMessage: ${key.id} was deleted, skipping the resend`);
+        return undefined;
+      }
+
       if (message.pollCreationMessage) {
         const messageSecretBase64 = message.messageContextInfo?.messageSecret;
 
@@ -1756,6 +1764,18 @@ export class BaileysStartupService extends ChannelStartupService {
 
           if (update.message === null && update.status === undefined) {
             this.sendDataWebhook(Events.MESSAGES_DELETE, { ...key, status: 'DELETED' });
+
+            // Mark the row so getMessage refuses to resend the revoked content on a retry receipt.
+            if (findMessage?.id) {
+              try {
+                await this.prismaRepository.message.update({
+                  where: { id: findMessage.id },
+                  data: { status: 'DELETED' },
+                });
+              } catch (error) {
+                this.logger.warn(`Failed to mark revoked message ${findMessage.id} as deleted: ${error?.message}`);
+              }
+            }
 
             if (this.configService.get<Database>('DATABASE').SAVE_DATA.MESSAGE_UPDATE)
               await this.prismaRepository.messageUpdate.create({ data: message });
@@ -3921,8 +3941,9 @@ export class BaileysStartupService extends ChannelStartupService {
         const messageId = response.message?.protocolMessage?.key?.id;
         if (messageId) {
           const isLogicalDeleted = configService.get<Database>('DATABASE').DELETE_DATA.LOGICAL_MESSAGE_DELETE;
+          // Scoped to this instance: another instance in the same group stores a row with the same key id.
           let message = await this.prismaRepository.message.findFirst({
-            where: { key: { path: ['id'], equals: messageId } },
+            where: { instanceId: this.instanceId, key: { path: ['id'], equals: messageId } },
           });
           if (isLogicalDeleted) {
             if (!message) return response;
