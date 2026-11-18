@@ -715,6 +715,11 @@ export class BaileysStartupService extends ChannelStartupService {
       this.sendDataWebhook(Events.CALL, payload, true, ['websocket']);
     });
 
+    // Emitted by the patched Baileys once a top-level <status> stanza is acked.
+    this.client.ws.on('status.acked', (node: { attrs?: { type?: string } }) => {
+      this.logger.log(`Status stanza acked (type=${node?.attrs?.type ?? 'unknown'})`);
+    });
+
     this.phoneNumber = number;
 
     return this.client;
