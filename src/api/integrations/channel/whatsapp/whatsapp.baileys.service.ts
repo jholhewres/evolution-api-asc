@@ -931,6 +931,7 @@ export class BaileysStartupService extends ChannelStartupService {
       isLatest,
       progress,
       syncType,
+      lidPnMappings,
     }: {
       chats: Chat[];
       contacts: Contact[];
@@ -938,6 +939,7 @@ export class BaileysStartupService extends ChannelStartupService {
       isLatest?: boolean;
       progress?: number;
       syncType?: proto.HistorySync.HistorySyncType;
+      lidPnMappings?: { lid: string; pn: string }[];
     }) => {
       try {
         if (syncType === proto.HistorySync.HistorySyncType.ON_DEMAND) {
@@ -976,6 +978,11 @@ export class BaileysStartupService extends ChannelStartupService {
 
         // History sync pairs each LID chat with its phone number; keep it so consumers can resolve LID chats.
         const lidPhones = new Map<string, string>();
+        for (const { lid, pn } of lidPnMappings ?? []) {
+          if (lid && pn) {
+            lidPhones.set(lid, pn);
+          }
+        }
         for (const contact of contacts as any[]) {
           const lid = contact.lid ?? (contact.id?.endsWith('@lid') ? contact.id : undefined);
           const pn = contact.phoneNumber ?? (contact.id?.endsWith('@s.whatsapp.net') ? contact.id : undefined);
