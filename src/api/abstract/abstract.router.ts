@@ -17,6 +17,21 @@ type DataValidate<T> = {
 
 const logger = new Logger('Validate');
 
+const PROTECTED_INSTANCE_FIELDS = ['instanceName', 'instanceId'];
+
+// The auth guard checks the instance named in the path, so the query must not swap it for another one.
+function withoutInstanceOverride(source: Record<string, any>): Record<string, any> {
+  const sanitized: Record<string, any> = {};
+  for (const [key, value] of Object.entries(source)) {
+    if (PROTECTED_INSTANCE_FIELDS.includes(key)) {
+      logger.warn(`Ignoring query field "${key}": the instance comes from the path`);
+      continue;
+    }
+    sanitized[key] = value;
+  }
+  return sanitized;
+}
+
 export abstract class RouterBroker {
   constructor() {}
   public routerPath(path: string, param = true) {
@@ -34,7 +49,9 @@ export abstract class RouterBroker {
     const instance = request.params as unknown as InstanceDto;
 
     if (request?.query && Object.keys(request.query).length > 0) {
-      Object.assign(instance, request.query);
+      // Routes without :instanceName (fetchInstances) only narrow their result with these fields.
+      const query = request.query as Record<string, any>;
+      Object.assign(instance, instance?.instanceName ? withoutInstanceOverride(query) : query);
     }
 
     if (request.originalUrl.includes('/instance/create')) {
