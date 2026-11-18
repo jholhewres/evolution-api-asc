@@ -89,6 +89,56 @@ index f2003ac..0f8b4ba 100644
      ws.on('CB:ack,class:message', (node) => {
          handleBadAck(node).catch(error => onUnexpectedError(error, 'handling bad ack'));
      });
+diff --git a/node_modules/baileys/lib/Socket/messages-send.js b/node_modules/baileys/lib/Socket/messages-send.js
+index d61e064..0d44880 100644
+--- a/node_modules/baileys/lib/Socket/messages-send.js
++++ b/node_modules/baileys/lib/Socket/messages-send.js
+@@ -201,11 +201,13 @@ export const makeMessagesSocket = (config) => {
+             if (lidResults.length > 0) {
+                 logger.trace('Storing LID maps from device call');
+                 await signalRepository.lidMapping.storeLIDPNMappings(lidResults.map(a => ({ lid: a.lid, pn: a.id })));
+-                // Force-refresh sessions for newly mapped LIDs to align identity addressing
++                // Make sure the LIDs have sessions. Not forced: lidResults holds every LID the query
++                // returned, and forcing replaced the open session with each contact's phone on every
++                // device fetch. Identity changes and retries still force their own refresh.
+                 try {
+                     const lids = lidResults.map(a => a.lid);
+                     if (lids.length) {
+-                        await assertSessions(lids, true);
++                        await assertSessions(lids);
+                     }
+                 }
+                 catch (e) {
+@@ -454,16 +456,11 @@ export const makeMessagesSocket = (config) => {
+             messageContextInfo: message.messageContextInfo
+         };
+         const extraAttrs = {};
+-        if (participant) {
+-            if (!isGroup && !isStatus) {
+-                additionalAttributes = { ...additionalAttributes, device_fanout: 'false' };
+-            }
+-            const { user, device } = jidDecode(participant.jid);
+-            devices.push({
+-                user,
+-                device,
+-                jid: participant.jid
+-            });
++        // A retry resend is encrypted once, in the retry block below. Adding the participant to the
++        // regular fan-out encrypted it twice: the server rejects that stanza (479) and the session
++        // advances twice, so the device fails again.
++        if (participant && !isGroup && !isStatus) {
++            additionalAttributes = { ...additionalAttributes, device_fanout: 'false' };
+         }
+         await authState.keys.transaction(async () => {
+             const mediaType = getMediaType(message);
+@@ -706,6 +703,7 @@ export const makeMessagesSocket = (config) => {
+                         }
+                     })
+                     : encodeWAMessage(messageToSend);
++                await assertSessions([participant.jid]);
+                 const { type, ciphertext: encryptedContent } = await signalRepository.encryptMessage({
+                     data: encodedMessageToSend,
+                     jid: participant.jid
 diff --git a/node_modules/baileys/lib/Socket/socket.js b/node_modules/baileys/lib/Socket/socket.js
 index ae34a8f..5561bf9 100644
 --- a/node_modules/baileys/lib/Socket/socket.js
@@ -148,3 +198,25 @@ index a3d2fa6..30e3f1e 100644
      return fetched.pipe(output, { end: true });
  };
  export function extensionForMediaMessage(message) {
+diff --git a/node_modules/baileys/lib/Utils/signal.js b/node_modules/baileys/lib/Utils/signal.js
+index 3cb615c..2726bf0 100644
+--- a/node_modules/baileys/lib/Utils/signal.js
++++ b/node_modules/baileys/lib/Utils/signal.js
+@@ -141,7 +141,7 @@ export const extractDeviceJids = (result, myJid, myLid, excludeZeroDevices) => {
+     for (const userResult of result) {
+         const { devices, id } = userResult;
+         const decoded = jidDecode(id), { user, server } = decoded;
+-        let { domainType } = decoded;
++        const { domainType: userDomainType } = decoded;
+         const deviceList = devices?.deviceList;
+         if (!Array.isArray(deviceList))
+             continue;
+@@ -150,6 +150,8 @@ export const extractDeviceJids = (result, myJid, myLid, excludeZeroDevices) => {
+                 ((myUser !== user && myLid !== user) || myDevice !== device) && // either different user or if me user, not this device
+                 (device === 0 || !!keyIndex) // ensure that "key-index" is specified for "non-zero" devices, produces a bad req otherwise
+             ) {
++                // per device: a shared variable let a hosted device move every later device to the hosted server
++                let domainType = userDomainType;
+                 if (isHosted) {
+                     domainType = domainType === WAJIDDomains.LID ? WAJIDDomains.HOSTED_LID : WAJIDDomains.HOSTED;
+                 }
