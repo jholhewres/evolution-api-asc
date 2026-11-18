@@ -317,6 +317,12 @@ export class BaileysStartupService extends ChannelStartupService {
     if (sessionExists) {
       await this.prismaRepository.session.delete({ where: { sessionId: this.instanceId } });
     }
+
+    this.stateConnection = { state: 'close', statusReason: DisconnectReason.loggedOut };
+    await this.prismaRepository.instance.update({
+      where: { id: this.instanceId },
+      data: { connectionStatus: 'close' },
+    });
   }
 
   public async getProfileName() {
@@ -507,6 +513,10 @@ export class BaileysStartupService extends ChannelStartupService {
     }
 
     if (connection === 'open') {
+      if (!this.client?.user?.id) {
+        this.logger.warn('Connection open without client.user, skipping');
+        return;
+      }
       this.instance.wuid = this.client.user.id.replace(/:\d+/, '');
       try {
         const profilePic = await this.profilePicture(this.instance.wuid);
