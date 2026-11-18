@@ -1967,9 +1967,42 @@ export class BaileysStartupService extends ChannelStartupService {
     },
   };
 
+  // Batches run one after another on eventProcessingQueue, which outlives reconnects. A batch that never
+  // settles (a media download or re-upload request that gets no answer) used to hold every later event of
+  // the instance, so it stayed open but deaf until the process restarted. Past this limit the queue moves on;
+  // the slow batch keeps running and finishes on its own.
+  private static readonly EVENT_BATCH_TIMEOUT_MS = 120_000;
+
+  private async runEventBatch(events: string[], run: () => Promise<void>) {
+    let timer: NodeJS.Timeout;
+    const timeout = new Promise<boolean>((resolve) => {
+      timer = setTimeout(() => resolve(true), BaileysStartupService.EVENT_BATCH_TIMEOUT_MS);
+    });
+    const batch = run().then(
+      () => false,
+      (error) => {
+        this.logger.error(error);
+        return false;
+      },
+    );
+
+    try {
+      if (await Promise.race([batch, timeout])) {
+        this.logger.error({
+          message: 'Event batch exceeded the timeout, releasing the event queue',
+          instance: this.instance.name,
+          events,
+          timeoutMs: BaileysStartupService.EVENT_BATCH_TIMEOUT_MS,
+        });
+      }
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   private eventHandler() {
     this.client.ev.process(async (events) => {
-      this.eventProcessingQueue = this.eventProcessingQueue.then(async () => {
+      const processBatch = async () => {
         try {
           if (!this.endSession) {
             const database = this.configService.get<Database>('DATABASE');
@@ -2103,7 +2136,11 @@ export class BaileysStartupService extends ChannelStartupService {
         } catch (error) {
           this.logger.error(error);
         }
-      });
+      };
+
+      this.eventProcessingQueue = this.eventProcessingQueue.then(() =>
+        this.runEventBatch(Object.keys(events), processBatch),
+      );
     });
   }
 
