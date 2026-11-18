@@ -1,3 +1,34 @@
+diff --git a/node_modules/libsignal/src/session_cipher.js b/node_modules/libsignal/src/session_cipher.js
+index 0e6df11..136b9db 100644
+--- a/node_modules/libsignal/src/session_cipher.js
++++ b/node_modules/libsignal/src/session_cipher.js
+@@ -143,11 +143,15 @@ class SessionCipher {
+         const errs = [];
+         for (const session of sessions) {
+             let plaintext; 
++            // A failed attempt still steps the ratchet and drops chain keys of the session it ran on,
++            // and the record is stored when a later session succeeds. Each attempt runs on a copy,
++            // and only the session that decrypts is kept.
++            const attempt = session.constructor.deserialize(session.serialize());
+             try {
+-                plaintext = await this.doDecryptWhisperMessage(data, session);
+-                session.indexInfo.used = Date.now();
++                plaintext = await this.doDecryptWhisperMessage(data, attempt);
++                attempt.indexInfo.used = Date.now();
+                 return {
+-                    session,
++                    session: attempt,
+                     plaintext
+                 };
+             } catch(e) {
+@@ -169,6 +173,7 @@ class SessionCipher {
+                 throw new errors.SessionError("No session record");
+             }
+             const result = await this.decryptWithSessions(data, record.getSessions());
++            record.setSession(result.session);
+             const remoteIdentityKey = result.session.indexInfo.remoteIdentityKey;
+             if (!await this.storage.isTrustedIdentity(this.addr.id, remoteIdentityKey)) {
+                 throw new errors.UntrustedIdentityKeyError(this.addr.id, remoteIdentityKey);
 diff --git a/node_modules/libsignal/src/session_record.js b/node_modules/libsignal/src/session_record.js
 index 7626a39..3fee12c 100644
 --- a/node_modules/libsignal/src/session_record.js
