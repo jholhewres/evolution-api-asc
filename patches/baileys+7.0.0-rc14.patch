@@ -1,3 +1,18 @@
+diff --git a/node_modules/baileys/lib/Socket/Client/websocket.js b/node_modules/baileys/lib/Socket/Client/websocket.js
+index 311fb3e..52e9ea7 100644
+--- a/node_modules/baileys/lib/Socket/Client/websocket.js
++++ b/node_modules/baileys/lib/Socket/Client/websocket.js
+@@ -30,7 +30,9 @@ export class WebSocketClient extends AbstractSocketClient {
+             agent: this.config.agent
+         });
+         this.socket.setMaxListeners(0);
+-        const events = ['close', 'error', 'upgrade', 'message', 'open', 'ping', 'pong', 'unexpected-response'];
++        // 'unexpected-response' is not re-emitted: ws only aborts a non-101 upgrade (and emits
++        // 'error') when nobody listens to it; otherwise the socket stays CONNECTING forever
++        const events = ['close', 'error', 'upgrade', 'message', 'open', 'ping', 'pong'];
+         for (const event of events) {
+             this.socket?.on(event, (...args) => this.emit(event, ...args));
+         }
 diff --git a/node_modules/baileys/lib/Socket/messages-recv.js b/node_modules/baileys/lib/Socket/messages-recv.js
 index f2003ac..0f8b4ba 100644
 --- a/node_modules/baileys/lib/Socket/messages-recv.js
@@ -103,7 +118,7 @@ index 24a3583..446f674 100644
      };
  };
 diff --git a/node_modules/baileys/lib/Utils/messages-media.js b/node_modules/baileys/lib/Utils/messages-media.js
-index a3d2fa6..c4b59e9 100644
+index a3d2fa6..30e3f1e 100644
 --- a/node_modules/baileys/lib/Utils/messages-media.js
 +++ b/node_modules/baileys/lib/Utils/messages-media.js
 @@ -403,11 +403,15 @@ const toSmallestChunkSize = (num) => {
@@ -123,3 +138,13 @@ index a3d2fa6..c4b59e9 100644
      }
      catch {
          return undefined;
+@@ -512,6 +516,9 @@ export const downloadEncryptedContent = async (downloadUrl, { cipherKey, iv }, {
+             }
+         }
+     });
++    // pipe() does not forward source errors: a body cut mid-download would surface as an
++    // uncaught exception and the returned stream would never end, hanging its consumer
++    fetched.once('error', error => output.destroy(error));
+     return fetched.pipe(output, { end: true });
+ };
+ export function extensionForMediaMessage(message) {
