@@ -1,3 +1,9 @@
+> **About this fork.** Branch `asc/2.3.7` is Evolution API 2.3.7 plus connection, session and
+> security fixes, released as `2.3.7-asc.N` tags. It moves Baileys to 7.0.0-rc14 and patches
+> Baileys and libsignal with `patch-package` (`patches/`, applied on `npm install` / `npm ci`).
+> `CHANGELOG.md` lists every change and its source. Build and run as upstream, on Node 22:
+> `npm ci && npm run db:generate && npm run build && npm run start:prod`.
+
 <h1 align="center">Evolution Api</h1>
 
 <div align="center">

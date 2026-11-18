@@ -1,3 +1,102 @@
+# 2.3.7-asc.1 (2026-11-18)
+
+Patch release of 2.3.7 (commit `cd800f29`). It fixes WhatsApp Web sessions that stay
+`open` but stop receiving messages, and moves Baileys to 7.0.0-rc14. It needs no database
+migration. Baileys and libsignal fixes ship as `patch-package` patches in `patches/`, which
+the `postinstall` hook applies.
+
+### Baileys 7.0.0-rc.9 -> 7.0.0-rc14
+
+* **Status stanzas are acked** (patch, Baileys #2858, PR #2883). WhatsApp now delivers contacts'
+  statuses as a top-level `<status>` stanza, and no Baileys release acks it. Until it is acked, the
+  server holds back new messages on that session. About 50 min later it ends the stream with
+  `<stream:error><ack class="status"/>`. The instance then reconnects `open` but deaf, every cycle.
+  * The ack goes out both online and through the offline queue.
+  * A failed ack is reported instead of breaking the queue.
+  * Each ack is logged as `Status stanza acked (type=...)`.
+* **The offline node queue survives a failing node** (rc10, Baileys `c4e5d12`). In rc.9 a single
+  throw (an `@bot` message's "Unknown message type", `rate-overlimit`) stopped offline processing
+  for the rest of the connection, so the backlog delivered after each reconnect was dropped.
+* **Failed message handling is nacked** instead of left unacked (rc10, `c4e5d12`).
+* **Session and decrypt fixes from rc10-rc14:**
+  * identity key change resets the session (`b023901`);
+  * retry receipts process the `<keys>` bundle and embed the SKDM on resend (`1b16859`);
+  * stale peer session cache and prekey upload deadlock fixed (`2e421bc`);
+  * prekey digest checked after login and signed prekey rotation (rc14);
+  * placeholder resend for unencrypted messages (`7a5b090`);
+  * "online but disconnected" socket state (`5cbad31`, `282f065`);
+  * own-phone protocol messages handled (`3beb08e`, `5ddc231`).
+* **Memory fixes from rc10-rc14:** mutex promise leak (`1e6f65c`), event buffer leak (`a2677c8`),
+  cleanup on socket close (`3730684`), media upload pressure (`43d1787`), history sync memory
+  (`77c8d3f`).
+* **Security:** rc.9 lets a crafted `protocolMessage` spoof `messages.upsert` and history sync
+  and corrupt app state (CVE-2026-48063, GHSA-qvv5-jq5g-4cgg, critical). Fixed in rc12.
+* **An undecryptable status is acked instead of nacked** (patch, Baileys PR #2779). A NACK kept it
+  pending at the head of the offline stream, and the server withheld the rest of the queue on every
+  reconnect.
+* **Encrypt notifications without `<count>` are skipped** (patch) instead of throwing a TypeError on
+  every one.
+* **Acks before login** no longer throw on `creds.me.id` (patch, Baileys #2738).
+* **Media on the `a.whatsapp.net` placeholder host downloads again** (patch, Baileys `a5c3ee7` on
+  master). rc14 builds download URLs from the host in `url`, and that host does not resolve.
+* **Each socket's AsyncLocalStorage is released when it ends** (patch, Baileys PR #2911). The cost
+  no longer grows with every reconnect.
+* Evolution typechecks against rc14 without source changes. The libsignal dependency moves to npm
+  `libsignal@6.0.0`, and app state sync uses `whatsapp-rust-bridge@0.5.4`. Both load from
+  `node dist/main` on Node 22 (require of ESM).
+
+### libsignal
+
+* **Session keys stay out of the log** (patch). libsignal printed the whole `SessionEntry`,
+  including the ratchet private and root keys, every time a session was opened or closed. That
+  happens on every decrypt retry.
+
+### Connection handling
+
+* **A logout no longer reconnects** (upstream `933a28de`, trimmed).
+  * `logoutInstance` marks the instance as deleting and ends the session.
+  * A close on a deleting or ended instance (logout, QR limit) starts no new connection.
+  * Reconnects wait 3 s.
+  * `CONFIG_BAILEYS_VERSION` pins the WhatsApp Web version.
+  * A new client clears the deleting flag, so an instance that is logged out and paired again on the
+    same process still reconnects.
+* **A `loggedOut` within 30 s of a `stream:error 515` reconnects** (port of upstream `1d38d4f6`).
+  Before, it was taken as a logout that wiped the credentials of the session that had just
+  reconnected.
+* **A logged out instance is stored and reported as `close`**, and an `open` event without
+  `client.user` no longer throws (upstream `72ca397c`). Its change that stops reconnecting on 408
+  is left out: a transient timeout would log the instance out.
+* **`remove.instance` is emitted even when the logout fails** (upstream `c29bcc50`).
+* **The WhatsApp Web version is cached for 1 h** (upstream `afb76b7b`), so reconnects do not fetch
+  `sw.js` every time.
+* **The message subject is recreated after a logout** (upstream PR #2717). Before, every incoming
+  message was dropped after a logout and a new connection on the same process.
+
+### Messages and history sync
+
+* **No empty resend for a message that is not stored** (upstream PR #2728). `getMessage` returned
+  `{ conversation: '' }`, and Baileys relayed it under the original id as a blank bubble.
+* **History messages from LID chats carry `key.remoteJidAlt`**. It is taken first from the LID-PN
+  pairs Baileys passes on `messaging-history.set`, then from the history contacts.
+
+### Security
+
+* **The query can no longer swap the instance named in the path** (backport of upstream
+  `a9a7f5f9`, adapted). The auth guard checks the path instance, but the router then merged
+  `?instanceName=` over it, so one instance's key could act on another. `fetchInstances` has no
+  path instance and keeps using `instanceName`/`instanceId` from the query to narrow its result,
+  which is already limited to the caller's key.
+
+### Not included
+
+* Upstream 2.4.0 (license activation gate), Prisma 7, Express 5 and the EvoHub channel.
+* Upstream `3d253fff` (skip reconnect while waiting for a QR). `wuid` is not restored at boot, so
+  a paired instance that closes before `open` would never retry.
+* Upstream PR #2656 (close the previous socket before creating a new client). The old socket's
+  close event would start another connection and loop.
+* `whatsapp-rust-bridge@0.5.5` override: `node dist/main` loads 0.5.4 through ESM. It is only needed
+  for `tsx`.
+
 # 2.3.7 (2025-12-05)
 
 ### Features
