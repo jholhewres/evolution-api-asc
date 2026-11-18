@@ -140,7 +140,7 @@ index d61e064..0d44880 100644
                      data: encodedMessageToSend,
                      jid: participant.jid
 diff --git a/node_modules/baileys/lib/Socket/socket.js b/node_modules/baileys/lib/Socket/socket.js
-index ae34a8f..5561bf9 100644
+index ae34a8f..e380915 100644
 --- a/node_modules/baileys/lib/Socket/socket.js
 +++ b/node_modules/baileys/lib/Socket/socket.js
 @@ -505,6 +505,8 @@ export const makeSocket = (config) => {
@@ -152,6 +152,70 @@ index ae34a8f..5561bf9 100644
      };
      const waitForSocketOpen = async () => {
          if (ws.isOpen) {
+@@ -690,6 +692,8 @@ export const makeSocket = (config) => {
+     ws.on('close', () => void end(new Boom('Connection Terminated', { statusCode: DisconnectReason.connectionClosed })));
+     // the server terminated the connection
+     ws.on('CB:xmlstreamend', () => void end(new Boom('Connection Terminated by Server', { statusCode: DisconnectReason.connectionClosed })));
++    // re-renders the QR on screen while a pairing QR flow is live on this connection
++    let refreshPairingQR;
+     // QR gen
+     ws.on('CB:iq,type:set,pair-device', async (stanza) => {
+         const iq = {
+@@ -705,7 +709,17 @@ export const makeSocket = (config) => {
+         const refNodes = getBinaryNodeChildren(pairDeviceNode, 'ref');
+         const noiseKeyB64 = Buffer.from(creds.noiseKey.public).toString('base64');
+         const identityKeyB64 = Buffer.from(creds.signedIdentityKey.public).toString('base64');
+-        const advB64 = creds.advSecretKey;
++        let currentRef;
++        // the adv secret is read on each render: companion_reg_refresh rotates it mid-flow
++        const renderPairQR = (ref) => {
++            const qr = buildPairingQRData(ref, noiseKeyB64, identityKeyB64, creds.advSecretKey, browser);
++            ev.emit('connection.update', { qr });
++        };
++        refreshPairingQR = () => {
++            if (currentRef && ws.isOpen) {
++                renderPairQR(currentRef);
++            }
++        };
+         let qrMs = qrTimeout || 60000; // time to let a QR live
+         const genPairQR = () => {
+             if (!ws.isOpen) {
+@@ -716,14 +730,32 @@ export const makeSocket = (config) => {
+                 void end(new Boom('QR refs attempts ended', { statusCode: DisconnectReason.timedOut }));
+                 return;
+             }
+-            const ref = refNode.content.toString('utf-8');
+-            const qr = buildPairingQRData(ref, noiseKeyB64, identityKeyB64, advB64, browser);
+-            ev.emit('connection.update', { qr });
++            currentRef = refNode.content.toString('utf-8');
++            renderPairQR(currentRef);
+             qrTimer = setTimeout(genPairQR, qrMs);
+             qrMs = qrTimeout || 20000; // shorter subsequent qrs
+         };
+         genPairQR();
+     });
++    // The server retires the adv secret an unpaired companion advertises. A QR still built on the
++    // old secret scans but fails to link, so mint a new one and re-render the current ref (its
++    // lifetime is untouched; spending a ref here would drain the server's allotment). The generic
++    // notification handler acks it.
++    ws.on('CB:notification,type:companion_reg_refresh', (node) => {
++        if (!getBinaryNodeChild(node, 'companion_reg_refresh') && !getBinaryNodeChild(node, 'pair-device-rotate-qr')) {
++            logger.warn({ attrs: node.attrs }, 'companion_reg_refresh without an expected child, ignoring');
++            return;
++        }
++        // once paired (or a pairing code is pending) the session is verified against the current secret
++        if (creds.me) {
++            logger.debug({ id: node.attrs.id }, 'companion_reg_refresh on a registered session, keeping the adv secret');
++            return;
++        }
++        creds.advSecretKey = randomBytes(32).toString('base64');
++        ev.emit('creds.update', { advSecretKey: creds.advSecretKey });
++        logger.info({ id: node.attrs.id }, 'rotated the adv secret on companion_reg_refresh, re-rendering the pairing QR');
++        refreshPairingQR?.();
++    });
+     // device paired for the first time
+     // if device pairs successfully, the server asks to restart the connection
+     ws.on('CB:iq,,pair-success', async (stanza) => {
 diff --git a/node_modules/baileys/lib/Utils/auth-utils.js b/node_modules/baileys/lib/Utils/auth-utils.js
 index 24a3583..446f674 100644
 --- a/node_modules/baileys/lib/Utils/auth-utils.js
