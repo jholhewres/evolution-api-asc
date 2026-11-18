@@ -252,6 +252,9 @@ export class BaileysStartupService extends ChannelStartupService {
   private isDeleting = false; // Flag to prevent reconnection during deletion
   private logBaileys = this.configService.get<Log>('LOG').BAILEYS;
   private eventProcessingQueue: Promise<void> = Promise.resolve();
+  private lastStream515At = 0;
+  // After a stream:error 515 (restart required) WhatsApp may close the old socket with loggedOut; that is not a logout.
+  private static readonly STREAM_515_RECONNECT_GRACE_MS = 30_000;
 
   // Cache TTL constants (in seconds)
   private readonly MESSAGE_CACHE_TTL_SECONDS = 5 * 60; // 5 minutes - avoid duplicate message processing
@@ -450,7 +453,9 @@ export class BaileysStartupService extends ChannelStartupService {
 
       const statusCode = (lastDisconnect?.error as Boom)?.output?.statusCode;
       const codesToNotReconnect = [DisconnectReason.loggedOut, DisconnectReason.forbidden, 402, 406];
-      const shouldReconnect = !codesToNotReconnect.includes(statusCode);
+      const recentStream515 = Date.now() - this.lastStream515At < BaileysStartupService.STREAM_515_RECONNECT_GRACE_MS;
+      const shouldReconnect =
+        !codesToNotReconnect.includes(statusCode) || (statusCode === DisconnectReason.loggedOut && recentStream515);
 
       this.logger.info({
         message: 'Connection closed, evaluating reconnection',
@@ -752,6 +757,12 @@ export class BaileysStartupService extends ChannelStartupService {
       console.log('CB:ack,class:call', packet);
       const payload = { event: 'CB:ack,class:call', packet: packet };
       this.sendDataWebhook(Events.CALL, payload, true, ['websocket']);
+    });
+
+    this.client.ws.on('CB:stream:error', (node: { attrs?: { code?: string | number } }) => {
+      if (String(node?.attrs?.code) === '515') {
+        this.lastStream515At = Date.now();
+      }
     });
 
     // Emitted by the patched Baileys once a top-level <status> stanza is acked.
